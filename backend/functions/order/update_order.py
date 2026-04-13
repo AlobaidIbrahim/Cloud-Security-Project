@@ -1,6 +1,6 @@
-import json
 import boto3
 import os
+from botocore.exceptions import ClientError
 
 # status list
 # -----------
@@ -13,42 +13,38 @@ import os
 # 500: cancelled
 # 600: rejected
 
+
 def lambda_handler(event, context):
-  orderId = event["orderId"]
-  itemList = event["items"]
-  status = 100
-  userId = event["user"]
-  address = "{}"
+    order_id = event["orderId"]
+    item_list = event["items"]
+    user_id = event["user"]
 
-  dynamodb = boto3.resource('dynamodb')
-  table = dynamodb.Table(os.environ["ORDERS_TABLE"])
-  response = table.get_item(
-    Key={
-      "orderId": orderId,
-      "userId": userId
-    },
-    AttributesToGet=['orderStatus']
-  )
-  if 'Item' not in response:
-    res = {"status": "err", "msg": "could not find order"}
-    return res
+    dynamodb = boto3.resource("dynamodb")
+    table = dynamodb.Table(os.environ["ORDERS_TABLE"])
 
-  if response["Item"]["orderStatus"] > 110:
-    res = {"status": "err", "msg": "order already paid"}
-    return res
+    try:
+        response = table.update_item(
+            Key={"orderId": order_id, "userId": user_id},
+            UpdateExpression="SET itemList = :itemList",
+            ConditionExpression=(
+                "attribute_exists(orderId) AND "
+                "orderStatus <= :max_editable_status AND "
+                "attribute_not_exists(workflowLock)"
+            ),
+            ExpressionAttributeValues={
+                ":itemList": item_list,
+                ":max_editable_status": 110,
+            },
+            ReturnValues="UPDATED_NEW",
+        )
+        if response["ResponseMetadata"]["HTTPStatusCode"] == 200:
+            return {"status": "ok", "msg": "cart updated"}
+        return {"status": "err", "msg": "could not update cart"}
 
-  update_expr = 'SET {} = :itemList'.format("itemList")
-  response = table.update_item(
-    Key={"orderId": orderId, "userId": userId},
-    UpdateExpression=update_expr,
-    ExpressionAttributeValues={
-      ':itemList': itemList
-    }
-  )
-
-  if response['ResponseMetadata']['HTTPStatusCode'] == 200:
-    res = {"status": "ok", "msg": "cart updated"}
-  else:
-    res = {"status": "err", "err": "could not update cart"}
-
-  return res
+    except ClientError as e:
+        if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
+            return {
+                "status": "err",
+                "msg": "order cannot be updated after billing starts or while it is being processed",
+            }
+        return {"status": "err", "msg": "could not update cart"}
