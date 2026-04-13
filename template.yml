@@ -1,14 +1,3 @@
-#                                     
-#    ██████╗ ██╗   ██╗███████╗ █████╗  
-#    ██╔══██╗██║   ██║██╔════╝██╔══██╗
-#    ██║  ██║██║   ██║███████╗███████║
-#    ██║  ██║╚██╗ ██╔╝╚════██║██╔══██║
-#    ██████╔╝ ╚████╔╝ ███████║██║  ██║
-#    ╚═════╝   ╚═══╝  ╚══════╝╚═╝  ╚═╝
-#  Damn Vulnerable SERVERLESS Application                                                    
-#      Tal Melamed (@4ppsec), OWASP
-#
-
 AWSTemplateFormatVersion: '2010-09-09'
 Transform: 'AWS::Serverless-2016-10-31'
 Description: 'OWASP DVSA Stack (Repository Deployment)'
@@ -43,7 +32,6 @@ Globals:
       AllowOrigin: "'*'"
 
 Resources:
-  # region API Gateway
   ApiGatewayApi:
     Type: AWS::Serverless::Api
     Properties:
@@ -269,9 +257,7 @@ Resources:
       Type: COGNITO_USER_POOLS
       ProviderARNs:
         - {"Fn::GetAtt": ['CognitoUserPoolDvsaUserPool', Arn]}
-  # endregion APIGW
 
-  # region Cognito
   CognitoUserPoolDvsaUserPool:
     Type: AWS::Cognito::UserPool
     Properties:
@@ -392,16 +378,12 @@ Resources:
                   Ref: CognitoIdentityPool
               ForAnyValue:StringLike:
                 'cognito-identity.amazonaws.com:amr': authenticated
-  # endregion Cognito
 
-  # region SQS
   SQSQueue:
     Type: "AWS::SQS::Queue"
     Properties:
       QueueName: "dvsa-order-paid-sqs"
-  # endregion SQS
-  
-  # region DynamoDB
+
   OrdersTable:
     Type: 'AWS::DynamoDB::Table'
     Properties:
@@ -445,20 +427,16 @@ Resources:
       ProvisionedThroughput:
         ReadCapacityUnits: 5
         WriteCapacityUnits: 5
-  # endregion DDB
-  
-  # region S3
+
   S3ReceiptsBucket:
     Type: AWS::S3::Bucket
     Properties:
       BucketName: !Sub dvsa-receipts-bucket-${AWS::AccountId}-${AWS::Region}
-      # Set Public Access after new changes in s3 at April 2023
       PublicAccessBlockConfiguration:
         BlockPublicAcls: false
         BlockPublicPolicy: false
         IgnorePublicAcls: false
         RestrictPublicBuckets: false
-      # Set ownership as the default has changed in April 2023
       OwnershipControls:
         Rules:
         - ObjectOwnership: ObjectWriter
@@ -481,13 +459,11 @@ Resources:
     Type: AWS::S3::Bucket
     Properties:
       BucketName: !Sub dvsa-feedback-bucket-${AWS::AccountId}-${AWS::Region}
-      # Set Public Access after new changes in s3 at April 2023
       PublicAccessBlockConfiguration:
         BlockPublicAcls: false
         BlockPublicPolicy: false
         IgnorePublicAcls: false
         RestrictPublicBuckets: false
-      # Set ownership as the default has changed in April 2023
       OwnershipControls:
         Rules:
         - ObjectOwnership: ObjectWriter
@@ -534,13 +510,11 @@ Resources:
     Type: AWS::S3::Bucket
     Properties:
       BucketName: !Sub ${WebsiteBucketPrefix}-${AWS::AccountId}-${AWS::Region}
-      # Set Public Access after new changes in s3 at April 2023
       PublicAccessBlockConfiguration:
         BlockPublicAcls: false
         BlockPublicPolicy: false
         IgnorePublicAcls: false
         RestrictPublicBuckets: false
-      # Set ownership as the default has changed in April 2023
       OwnershipControls:
         Rules:
         - ObjectOwnership: ObjectWriter
@@ -592,11 +566,7 @@ Resources:
                 - s3:*
               Effect: Allow
               Resource: !Sub 'arn:aws:s3:::${WebsiteBucketPrefix}-${AWS::AccountId}-${AWS::Region}/*'
-  # endregion S3
-  
-  # region Lambda
 
-  ## Order-Manager
   OrderManagerFunction:
     Type: 'AWS::Serverless::Function'
     Properties:
@@ -606,14 +576,42 @@ Resources:
       CodeUri: backend/functions/order-manager/
       Environment:
         Variables:
-          userpoolid:
-            Ref: CognitoUserPoolDvsaUserPool
+          userpoolid: !Ref CognitoUserPoolDvsaUserPool
       MemorySize: 128
       Timeout: 30
       Policies:
-        - AmazonCognitoPowerUser
-        - CloudWatchLogsFullAccess
-        - AWSLambdaRole
+        - Version: '2012-10-17'
+          Statement:
+            - Sid: Logs
+              Effect: Allow
+              Action:
+                - logs:CreateLogGroup
+              Resource: !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:*
+            - Sid: LogsWrite
+              Effect: Allow
+              Action:
+                - logs:CreateLogStream
+                - logs:PutLogEvents
+              Resource: !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/DVSA-ORDER-MANAGER:*
+            - Sid: InvokeOrderFunctions
+              Effect: Allow
+              Action:
+                - lambda:InvokeFunction
+              Resource:
+                - !GetAtt OrderNewFunction.Arn
+                - !GetAtt OrderCancelFunction.Arn
+                - !GetAtt OrderGetFunction.Arn
+                - !GetAtt OrdersGetFunction.Arn
+                - !GetAtt OrderShippingFunction.Arn
+                - !GetAtt OrderUpdateFunction.Arn
+                - !GetAtt OrderBillingFunction.Arn
+                - !GetAtt OrderCompleteFunction.Arn
+            - Sid: CognitoReadUserPool
+              Effect: Allow
+              Action:
+                - cognito-idp:AdminGetUser
+                - cognito-idp:ListUsers
+              Resource: !GetAtt CognitoUserPoolDvsaUserPool.Arn
       Events:
         OrderApi:
           Type: Api
@@ -622,7 +620,6 @@ Resources:
             Path: /order
             Method: POST
 
-  ## Orders
   OrderNewFunction:
     Type: 'AWS::Serverless::Function'
     Properties:
@@ -636,8 +633,24 @@ Resources:
       MemorySize: 128
       Timeout: 10
       Policies:
-        - DynamoDBCrudPolicy:
-            TableName: DVSA-ORDERS-DB
+        - Version: '2012-10-17'
+          Statement:
+            - Sid: Logs
+              Effect: Allow
+              Action:
+                - logs:CreateLogGroup
+              Resource: !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:*
+            - Sid: LogsWrite
+              Effect: Allow
+              Action:
+                - logs:CreateLogStream
+                - logs:PutLogEvents
+              Resource: !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/DVSA-ORDER-NEW:*
+            - Sid: OrdersWrite
+              Effect: Allow
+              Action:
+                - dynamodb:PutItem
+              Resource: !GetAtt OrdersTable.Arn
 
   OrderCancelFunction:
     Type: 'AWS::Serverless::Function'
@@ -652,8 +665,25 @@ Resources:
       MemorySize: 128
       Timeout: 10
       Policies:
-        - DynamoDBCrudPolicy:
-            TableName: DVSA-ORDERS-DB
+        - Version: '2012-10-17'
+          Statement:
+            - Sid: Logs
+              Effect: Allow
+              Action:
+                - logs:CreateLogGroup
+              Resource: !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:*
+            - Sid: LogsWrite
+              Effect: Allow
+              Action:
+                - logs:CreateLogStream
+                - logs:PutLogEvents
+              Resource: !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/DVSA-ORDER-CANCEL:*
+            - Sid: OrdersCancel
+              Effect: Allow
+              Action:
+                - dynamodb:GetItem
+                - dynamodb:DeleteItem
+              Resource: !GetAtt OrdersTable.Arn
 
   OrderGetFunction:
     Type: 'AWS::Serverless::Function'
@@ -668,8 +698,27 @@ Resources:
       MemorySize: 128
       Timeout: 10
       Policies:
-        - DynamoDBCrudPolicy:
-            TableName: DVSA-ORDERS-DB
+        - Version: '2012-10-17'
+          Statement:
+            - Sid: Logs
+              Effect: Allow
+              Action:
+                - logs:CreateLogGroup
+              Resource: !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:*
+            - Sid: LogsWrite
+              Effect: Allow
+              Action:
+                - logs:CreateLogStream
+                - logs:PutLogEvents
+              Resource: !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/DVSA-ORDER-GET:*
+            - Sid: OrdersRead
+              Effect: Allow
+              Action:
+                - dynamodb:GetItem
+                - dynamodb:Query
+              Resource:
+                - !GetAtt OrdersTable.Arn
+                - !Sub ${OrdersTable.Arn}/index/orderId-index
 
   OrdersGetFunction:
     Type: 'AWS::Serverless::Function'
@@ -684,8 +733,27 @@ Resources:
       MemorySize: 128
       Timeout: 10
       Policies:
-        - DynamoDBCrudPolicy:
-            TableName: DVSA-ORDERS-DB
+        - Version: '2012-10-17'
+          Statement:
+            - Sid: Logs
+              Effect: Allow
+              Action:
+                - logs:CreateLogGroup
+              Resource: !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:*
+            - Sid: LogsWrite
+              Effect: Allow
+              Action:
+                - logs:CreateLogStream
+                - logs:PutLogEvents
+              Resource: !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/DVSA-ORDER-ORDERS:*
+            - Sid: OrdersList
+              Effect: Allow
+              Action:
+                - dynamodb:Query
+                - dynamodb:Scan
+              Resource:
+                - !GetAtt OrdersTable.Arn
+                - !Sub ${OrdersTable.Arn}/index/orderId-index
 
   OrderShippingFunction:
     Type: 'AWS::Serverless::Function'
@@ -700,8 +768,25 @@ Resources:
       MemorySize: 128
       Timeout: 10
       Policies:
-        - DynamoDBCrudPolicy:
-            TableName: DVSA-ORDERS-DB
+        - Version: '2012-10-17'
+          Statement:
+            - Sid: Logs
+              Effect: Allow
+              Action:
+                - logs:CreateLogGroup
+              Resource: !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:*
+            - Sid: LogsWrite
+              Effect: Allow
+              Action:
+                - logs:CreateLogStream
+                - logs:PutLogEvents
+              Resource: !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/DVSA-ORDER-SHIPPING:*
+            - Sid: OrdersShipping
+              Effect: Allow
+              Action:
+                - dynamodb:GetItem
+                - dynamodb:UpdateItem
+              Resource: !GetAtt OrdersTable.Arn
 
   OrderUpdateFunction:
     Type: 'AWS::Serverless::Function'
@@ -716,8 +801,26 @@ Resources:
       MemorySize: 128
       Timeout: 10
       Policies:
-        - DynamoDBCrudPolicy:
-            TableName: DVSA-ORDERS-DB
+        - Version: '2012-10-17'
+          Statement:
+            - Sid: Logs
+              Effect: Allow
+              Action:
+                - logs:CreateLogGroup
+              Resource: !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:*
+            - Sid: LogsWrite
+              Effect: Allow
+              Action:
+                - logs:CreateLogStream
+                - logs:PutLogEvents
+              Resource: !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/DVSA-ORDER-UPDATE:*
+            - Sid: OrdersUpdate
+              Effect: Allow
+              Action:
+                - dynamodb:GetItem
+                - dynamodb:UpdateItem
+                - dynamodb:PutItem
+              Resource: !GetAtt OrdersTable.Arn
 
   OrderBillingFunction:
     Type: 'AWS::Serverless::Function'
@@ -736,12 +839,39 @@ Resources:
       MemorySize: 128
       Timeout: 30
       Policies:
-        - DynamoDBCrudPolicy:
-            TableName: DVSA-ORDERS-DB
-        - S3CrudPolicy:
-            BucketName: !Sub ${WebsiteBucketPrefix}-${AWS::AccountId}-${AWS::Region}
-        - SQSSendMessagePolicy:
-            QueueName: dvsa-order-paid-sqs
+        - Version: '2012-10-17'
+          Statement:
+            - Sid: Logs
+              Effect: Allow
+              Action:
+                - logs:CreateLogGroup
+              Resource: !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:*
+            - Sid: LogsWrite
+              Effect: Allow
+              Action:
+                - logs:CreateLogStream
+                - logs:PutLogEvents
+              Resource: !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/DVSA-ORDER-BILLING:*
+            - Sid: OrdersBilling
+              Effect: Allow
+              Action:
+                - dynamodb:GetItem
+                - dynamodb:UpdateItem
+                - dynamodb:PutItem
+              Resource: !GetAtt OrdersTable.Arn
+            - Sid: WebsiteRead
+              Effect: Allow
+              Action:
+                - s3:GetObject
+                - s3:ListBucket
+              Resource:
+                - !Sub arn:aws:s3:::${WebsiteBucketPrefix}-${AWS::AccountId}-${AWS::Region}
+                - !Sub arn:aws:s3:::${WebsiteBucketPrefix}-${AWS::AccountId}-${AWS::Region}/*
+            - Sid: SendOrderPaidMessage
+              Effect: Allow
+              Action:
+                - sqs:SendMessage
+              Resource: !GetAtt SQSQueue.Arn
 
   OrderCompleteFunction:
     Type: 'AWS::Serverless::Function'
@@ -757,10 +887,26 @@ Resources:
       MemorySize: 128
       Timeout: 10
       Policies:
-        - DynamoDBCrudPolicy:
-            TableName: '*'
-  
-  ## Processing
+        - Version: '2012-10-17'
+          Statement:
+            - Sid: Logs
+              Effect: Allow
+              Action:
+                - logs:CreateLogGroup
+              Resource: !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:*
+            - Sid: LogsWrite
+              Effect: Allow
+              Action:
+                - logs:CreateLogStream
+                - logs:PutLogEvents
+              Resource: !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/DVSA-ORDER-COMPLETE:*
+            - Sid: OrdersComplete
+              Effect: Allow
+              Action:
+                - dynamodb:GetItem
+                - dynamodb:UpdateItem
+              Resource: !GetAtt OrdersTable.Arn
+
   PaymentProcessorFunction:
     Type: 'AWS::Serverless::Function'
     Properties:
@@ -770,6 +916,20 @@ Resources:
       CodeUri: backend/functions/processing/
       MemorySize: 128
       Timeout: 30
+      Policies:
+        - Version: '2012-10-17'
+          Statement:
+            - Sid: Logs
+              Effect: Allow
+              Action:
+                - logs:CreateLogGroup
+              Resource: !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:*
+            - Sid: LogsWrite
+              Effect: Allow
+              Action:
+                - logs:CreateLogStream
+                - logs:PutLogEvents
+              Resource: !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/DVSA-PAYMENT-PROCESSOR:*
       Events:
         PaymentProcessorApi:
           Type: Api
@@ -791,8 +951,27 @@ Resources:
       MemorySize: 128
       Timeout: 10
       Policies:
-        - S3CrudPolicy:
-            BucketName: !Sub ${WebsiteBucketPrefix}-${AWS::AccountId}-${AWS::Region}
+        - Version: '2012-10-17'
+          Statement:
+            - Sid: Logs
+              Effect: Allow
+              Action:
+                - logs:CreateLogGroup
+              Resource: !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:*
+            - Sid: LogsWrite
+              Effect: Allow
+              Action:
+                - logs:CreateLogStream
+                - logs:PutLogEvents
+              Resource: !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/DVSA-GET-CART-TOTAL:*
+            - Sid: WebsiteRead
+              Effect: Allow
+              Action:
+                - s3:GetObject
+                - s3:ListBucket
+              Resource:
+                - !Sub arn:aws:s3:::${WebsiteBucketPrefix}-${AWS::AccountId}-${AWS::Region}
+                - !Sub arn:aws:s3:::${WebsiteBucketPrefix}-${AWS::AccountId}-${AWS::Region}/*
       Events:
         CartTotalApi:
           Type: Api
@@ -815,10 +994,33 @@ Resources:
       MemorySize: 128
       Timeout: 10
       Policies:
-        - S3CrudPolicy:
-            BucketName: !Sub dvsa-receipts-bucket-${AWS::AccountId}-${AWS::Region}
-        - DynamoDBCrudPolicy:
-            TableName: '*'
+        - Version: '2012-10-17'
+          Statement:
+            - Sid: Logs
+              Effect: Allow
+              Action:
+                - logs:CreateLogGroup
+              Resource: !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:*
+            - Sid: LogsWrite
+              Effect: Allow
+              Action:
+                - logs:CreateLogStream
+                - logs:PutLogEvents
+              Resource: !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/DVSA-CREATE-RECEIPT:*
+            - Sid: ReceiptsWrite
+              Effect: Allow
+              Action:
+                - s3:PutObject
+              Resource: !Sub arn:aws:s3:::dvsa-receipts-bucket-${AWS::AccountId}-${AWS::Region}/*
+            - Sid: OrdersReadWriteForReceipt
+              Effect: Allow
+              Action:
+                - dynamodb:GetItem
+                - dynamodb:UpdateItem
+                - dynamodb:Query
+              Resource:
+                - !GetAtt OrdersTable.Arn
+                - !Sub ${OrdersTable.Arn}/index/orderId-index
       Events:
         MySQSEvent:
           Type: SQS
@@ -840,16 +1042,49 @@ Resources:
       MemorySize: 128
       Timeout: 10
       Policies:
-        - AmazonSESFullAccess
-        - S3CrudPolicy:
-            BucketName: '*'
-        - DynamoDBCrudPolicy:
-            TableName: '*'
-        - Version: '2012-10-17' 
+        - Version: '2012-10-17'
           Statement:
-            - Effect: Allow
+            - Sid: Logs
+              Effect: Allow
               Action:
-                - sts:GetCallerIdentify
+                - logs:CreateLogGroup
+              Resource: !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:*
+            - Sid: LogsWrite
+              Effect: Allow
+              Action:
+                - logs:CreateLogStream
+                - logs:PutLogEvents
+              Resource: !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/DVSA-SEND-RECEIPT-EMAIL:*
+            - Sid: SESMail
+              Effect: Allow
+              Action:
+                - ses:SendEmail
+                - ses:SendRawEmail
+                - ses:VerifyEmailIdentity
+              Resource: '*'
+            - Sid: ReceiptsReadWrite
+              Effect: Allow
+              Action:
+                - s3:GetObject
+                - s3:PutObject
+                - s3:DeleteObject
+                - s3:ListBucket
+              Resource:
+                - !Sub arn:aws:s3:::dvsa-receipts-bucket-${AWS::AccountId}-${AWS::Region}
+                - !Sub arn:aws:s3:::dvsa-receipts-bucket-${AWS::AccountId}-${AWS::Region}/*
+            - Sid: OrdersReadWrite
+              Effect: Allow
+              Action:
+                - dynamodb:GetItem
+                - dynamodb:UpdateItem
+                - dynamodb:Query
+              Resource:
+                - !GetAtt OrdersTable.Arn
+                - !Sub ${OrdersTable.Arn}/index/orderId-index
+            - Sid: IdentityCheck
+              Effect: Allow
+              Action:
+                - sts:GetCallerIdentity
               Resource: '*'
       Events:
         ReceiptUpload:
@@ -877,9 +1112,43 @@ Resources:
       MemorySize: 128
       Timeout: 30
       Policies:
-        - AWSLambda_FullAccess
-        - AmazonSESFullAccess
-        - AmazonS3FullAccess
+        - Version: '2012-10-17'
+          Statement:
+            - Sid: Logs
+              Effect: Allow
+              Action:
+                - logs:CreateLogGroup
+              Resource: !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:*
+            - Sid: LogsWrite
+              Effect: Allow
+              Action:
+                - logs:CreateLogStream
+                - logs:PutLogEvents
+              Resource: !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/DVSA-FEEDBACK-UPLOADS:*
+            - Sid: FeedbackBucketRW
+              Effect: Allow
+              Action:
+                - s3:GetObject
+                - s3:PutObject
+                - s3:DeleteObject
+                - s3:ListBucket
+              Resource:
+                - !Sub arn:aws:s3:::dvsa-feedback-bucket-${AWS::AccountId}-${AWS::Region}
+                - !Sub arn:aws:s3:::dvsa-feedback-bucket-${AWS::AccountId}-${AWS::Region}/*
+            - Sid: FeedbackOrdersAccess
+              Effect: Allow
+              Action:
+                - dynamodb:GetItem
+                - dynamodb:Query
+              Resource:
+                - !GetAtt OrdersTable.Arn
+                - !Sub ${OrdersTable.Arn}/index/orderId-index
+            - Sid: FeedbackSESMail
+              Effect: Allow
+              Action:
+                - ses:SendEmail
+                - ses:SendRawEmail
+              Resource: '*'
       Events:
         ReceiptUpload:
           Type: S3
@@ -887,7 +1156,6 @@ Resources:
             Bucket: !Ref S3FeedbackBucket
             Events: s3:ObjectCreated:*
 
-  ## Cron-Jobs
   CronProcessorFunction:
     Type: 'AWS::Serverless::Function'
     Properties:
@@ -901,8 +1169,28 @@ Resources:
       MemorySize: 128
       Timeout: 30
       Policies:
-        - DynamoDBCrudPolicy:
-            TableName: DVSA-ORDERS-DB
+        - Version: '2012-10-17'
+          Statement:
+            - Sid: Logs
+              Effect: Allow
+              Action:
+                - logs:CreateLogGroup
+              Resource: !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:*
+            - Sid: LogsWrite
+              Effect: Allow
+              Action:
+                - logs:CreateLogStream
+                - logs:PutLogEvents
+              Resource: !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/DVSA-CRON-PROCESSOR:*
+            - Sid: OrdersCron
+              Effect: Allow
+              Action:
+                - dynamodb:Scan
+                - dynamodb:Query
+                - dynamodb:UpdateItem
+              Resource:
+                - !GetAtt OrdersTable.Arn
+                - !Sub ${OrdersTable.Arn}/index/orderId-index
       Events:
         Timer:
           Type: Schedule
@@ -922,9 +1210,27 @@ Resources:
       MemorySize: 128
       Timeout: 30
       Policies:
-        - AWSLambdaExecute
-        - DynamoDBCrudPolicy:
-            TableName: DVSA-ORDERS-DB
+        - Version: '2012-10-17'
+          Statement:
+            - Sid: Logs
+              Effect: Allow
+              Action:
+                - logs:CreateLogGroup
+              Resource: !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:*
+            - Sid: LogsWrite
+              Effect: Allow
+              Action:
+                - logs:CreateLogStream
+                - logs:PutLogEvents
+              Resource: !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/DVSA-CRON-ORDER-CLEANER:*
+            - Sid: OrdersCleaner
+              Effect: Allow
+              Action:
+                - dynamodb:Scan
+                - dynamodb:DeleteItem
+              Resource:
+                - !GetAtt OrdersTable.Arn
+                - !Sub ${OrdersTable.Arn}/index/orderId-index
       Events:
         Timer:
           Type: Schedule
@@ -944,16 +1250,33 @@ Resources:
       MemorySize: 128
       Timeout: 30
       Policies:
-        - AWSLambdaRole
-        - DynamoDBCrudPolicy:
-            TableName: DVSA-ORDERS-DB
+        - Version: '2012-10-17'
+          Statement:
+            - Sid: Logs
+              Effect: Allow
+              Action:
+                - logs:CreateLogGroup
+              Resource: !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:*
+            - Sid: LogsWrite
+              Effect: Allow
+              Action:
+                - logs:CreateLogStream
+                - logs:PutLogEvents
+              Resource: !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/DVSA-CRON-JOB-UPDATE:*
+            - Sid: OrdersCronUpdate
+              Effect: Allow
+              Action:
+                - dynamodb:Scan
+                - dynamodb:UpdateItem
+              Resource:
+                - !GetAtt OrdersTable.Arn
+                - !Sub ${OrdersTable.Arn}/index/orderId-index
       Events:
         Timer:
           Type: Schedule
           Properties:
             Schedule: rate(1 day)
 
-  ## Users-Mgmt
   UserCreateFunction:
     Type: 'AWS::Serverless::Function'
     Properties:
@@ -968,13 +1291,32 @@ Resources:
       MemorySize: 128
       Timeout: 10
       Policies:
-        - LambdaInvokePolicy:
-            FunctionName: DVSA-USER-INBOX
-        - DynamoDBCrudPolicy:
-            TableName: DVSA-USERS-DB
-        - Version: '2012-10-17' 
+        - Version: '2012-10-17'
           Statement:
-            - Effect: Allow
+            - Sid: Logs
+              Effect: Allow
+              Action:
+                - logs:CreateLogGroup
+              Resource: !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:*
+            - Sid: LogsWrite
+              Effect: Allow
+              Action:
+                - logs:CreateLogStream
+                - logs:PutLogEvents
+              Resource: !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/DVSA-USER-CREATE:*
+            - Sid: InvokeInbox
+              Effect: Allow
+              Action:
+                - lambda:InvokeFunction
+              Resource: !GetAtt UserInboxFunction.Arn
+            - Sid: UsersCreate
+              Effect: Allow
+              Action:
+                - dynamodb:PutItem
+                - dynamodb:UpdateItem
+              Resource: !GetAtt UsersTable.Arn
+            - Sid: VerifySESIdentity
+              Effect: Allow
               Action:
                 - ses:VerifyEmailIdentity
               Resource: '*'
@@ -992,8 +1334,26 @@ Resources:
       MemorySize: 128
       Timeout: 10
       Policies:
-        - DynamoDBCrudPolicy:
-            TableName: DVSA-USERS-DB
+        - Version: '2012-10-17'
+          Statement:
+            - Sid: Logs
+              Effect: Allow
+              Action:
+                - logs:CreateLogGroup
+              Resource: !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:*
+            - Sid: LogsWrite
+              Effect: Allow
+              Action:
+                - logs:CreateLogStream
+                - logs:PutLogEvents
+              Resource: !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/DVSA-USER-ACCOUNT:*
+            - Sid: UsersAccountRW
+              Effect: Allow
+              Action:
+                - dynamodb:GetItem
+                - dynamodb:UpdateItem
+                - dynamodb:PutItem
+              Resource: !GetAtt UsersTable.Arn
 
   UserProfileFunction:
     Type: 'AWS::Serverless::Function'
@@ -1008,8 +1368,26 @@ Resources:
       MemorySize: 128
       Timeout: 10
       Policies:
-        - DynamoDBCrudPolicy:
-            TableName: DVSA-USERS-DB
+        - Version: '2012-10-17'
+          Statement:
+            - Sid: Logs
+              Effect: Allow
+              Action:
+                - logs:CreateLogGroup
+              Resource: !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:*
+            - Sid: LogsWrite
+              Effect: Allow
+              Action:
+                - logs:CreateLogStream
+                - logs:PutLogEvents
+              Resource: !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/DVSA-USER-PROFILE:*
+            - Sid: UsersProfileRW
+              Effect: Allow
+              Action:
+                - dynamodb:GetItem
+                - dynamodb:UpdateItem
+                - dynamodb:PutItem
+              Resource: !GetAtt UsersTable.Arn
 
   UserInboxFunction:
     Type: 'AWS::Serverless::Function'
@@ -1024,16 +1402,30 @@ Resources:
       MemorySize: 128
       Timeout: 10
       Policies:
-        - CloudWatchLogsFullAccess
-        - Version: '2012-10-17' 
+        - Version: '2012-10-17'
           Statement:
-            - Effect: Allow
+            - Sid: Logs
+              Effect: Allow
               Action:
-                - sts:GetCallerIdentify
+                - logs:CreateLogGroup
+              Resource: !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:*
+            - Sid: LogsWrite
+              Effect: Allow
+              Action:
+                - logs:CreateLogStream
+                - logs:PutLogEvents
+              Resource: !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/DVSA-USER-INBOX:*
+            - Sid: IdentityCheck
+              Effect: Allow
+              Action:
+                - sts:GetCallerIdentity
+              Resource: '*'
+            - Sid: VerifySESIdentity
+              Effect: Allow
+              Action:
                 - ses:VerifyEmailIdentity
               Resource: '*'
 
-  ## Admin
   AdminGetOrders:
     Type: 'AWS::Serverless::Function'
     Properties:
@@ -1047,8 +1439,28 @@ Resources:
       MemorySize: 128
       Timeout: 10
       Policies:
-        - AWSLambda_FullAccess
-        - AmazonDynamoDBFullAccess
+        - Version: '2012-10-17'
+          Statement:
+            - Sid: Logs
+              Effect: Allow
+              Action:
+                - logs:CreateLogGroup
+              Resource: !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:*
+            - Sid: LogsWrite
+              Effect: Allow
+              Action:
+                - logs:CreateLogStream
+                - logs:PutLogEvents
+              Resource: !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/DVSA-ADMIN-GET-ORDERS:*
+            - Sid: AdminOrdersRead
+              Effect: Allow
+              Action:
+                - dynamodb:GetItem
+                - dynamodb:Query
+                - dynamodb:Scan
+              Resource:
+                - !GetAtt OrdersTable.Arn
+                - !Sub ${OrdersTable.Arn}/index/orderId-index
 
   AdminGetReceiptFunction:
     Type: 'AWS::Serverless::Function'
@@ -1063,8 +1475,27 @@ Resources:
       MemorySize: 128
       Timeout: 10
       Policies:
-        - AWSLambda_FullAccess
-        - AmazonS3FullAccess
+        - Version: '2012-10-17'
+          Statement:
+            - Sid: Logs
+              Effect: Allow
+              Action:
+                - logs:CreateLogGroup
+              Resource: !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:*
+            - Sid: LogsWrite
+              Effect: Allow
+              Action:
+                - logs:CreateLogStream
+                - logs:PutLogEvents
+              Resource: !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/DVSA-ADMIN-GET-RECEIPT:*
+            - Sid: ReceiptsRead
+              Effect: Allow
+              Action:
+                - s3:GetObject
+                - s3:ListBucket
+              Resource:
+                - !Sub arn:aws:s3:::dvsa-receipts-bucket-${AWS::AccountId}-${AWS::Region}
+                - !Sub arn:aws:s3:::dvsa-receipts-bucket-${AWS::AccountId}-${AWS::Region}/*
 
   AdminUpdateOrdersFunction:
     Type: 'AWS::Serverless::Function'
@@ -1079,8 +1510,26 @@ Resources:
       MemorySize: 128
       Timeout: 10
       Policies:
-        - AWSLambda_FullAccess
-        - AmazonDynamoDBFullAccess
+        - Version: '2012-10-17'
+          Statement:
+            - Sid: Logs
+              Effect: Allow
+              Action:
+                - logs:CreateLogGroup
+              Resource: !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:*
+            - Sid: LogsWrite
+              Effect: Allow
+              Action:
+                - logs:CreateLogStream
+                - logs:PutLogEvents
+              Resource: !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/DVSA-ADMIN-UPDATE-ORDERS:*
+            - Sid: AdminOrdersUpdate
+              Effect: Allow
+              Action:
+                - dynamodb:GetItem
+                - dynamodb:UpdateItem
+                - dynamodb:PutItem
+              Resource: !GetAtt OrdersTable.Arn
 
   AdminShellFunction:
     Type: 'AWS::Serverless::Function'
@@ -1103,15 +1552,42 @@ Resources:
             Path: /admin
             Method: POST
       Policies:
-        - AWSLambda_FullAccess
-        - AmazonDynamoDBFullAccess
-  
-  # endregion Lambda
+        - Version: '2012-10-17'
+          Statement:
+            - Sid: Logs
+              Effect: Allow
+              Action:
+                - logs:CreateLogGroup
+              Resource: !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:*
+            - Sid: LogsWrite
+              Effect: Allow
+              Action:
+                - logs:CreateLogStream
+                - logs:PutLogEvents
+              Resource: !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/DVSA-ADMIN-SHELL:*
+            - Sid: UsersTableRW
+              Effect: Allow
+              Action:
+                - dynamodb:GetItem
+                - dynamodb:PutItem
+                - dynamodb:UpdateItem
+                - dynamodb:Scan
+                - dynamodb:Query
+              Resource: !GetAtt UsersTable.Arn
+            - Sid: CognitoAdminScopedToPool
+              Effect: Allow
+              Action:
+                - cognito-idp:ListUsers
+                - cognito-idp:AdminGetUser
+                - cognito-idp:AdminUpdateUserAttributes
+                - cognito-idp:AdminCreateUser
+                - cognito-idp:AdminDeleteUser
+                - cognito-idp:AdminSetUserPassword
+              Resource: !GetAtt CognitoUserPoolDvsaUserPool.Arn
 
-  # region Custom-Resource
   InitCustomFunction:
     Type: 'AWS::Serverless::Function'
-    DependsOn: 
+    DependsOn:
       - S3WebsiteBucket
       - S3FeedbackBucket
       - S3ReceiptsBucket
@@ -1124,7 +1600,7 @@ Resources:
       CodeUri: backend/deployment/
       Environment:
         Variables:
-          ACCOUNT_ID: 
+          ACCOUNT_ID:
             Ref: AWS::AccountId
           USER_POOL_ID:
             Ref: CognitoUserPoolDvsaUserPool
@@ -1140,18 +1616,66 @@ Resources:
       MemorySize: 512
       Timeout: 120
       Policies:
-        - AmazonSESFullAccess
-        - AmazonDynamoDBFullAccess
-        - AmazonS3FullAccess
-        - AmazonCognitoPowerUser
-        - CloudWatchLogsFullAccess
+        - Version: '2012-10-17'
+          Statement:
+            - Sid: Logs
+              Effect: Allow
+              Action:
+                - logs:CreateLogGroup
+              Resource: !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:*
+            - Sid: LogsWrite
+              Effect: Allow
+              Action:
+                - logs:CreateLogStream
+                - logs:PutLogEvents
+              Resource: !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/DVSA-INIT:*
+            - Sid: SESVerifyAndSend
+              Effect: Allow
+              Action:
+                - ses:VerifyEmailIdentity
+                - ses:SendEmail
+                - ses:SendRawEmail
+              Resource: '*'
+            - Sid: OrdersUsersTables
+              Effect: Allow
+              Action:
+                - dynamodb:GetItem
+                - dynamodb:PutItem
+                - dynamodb:UpdateItem
+                - dynamodb:Scan
+                - dynamodb:Query
+              Resource:
+                - !GetAtt OrdersTable.Arn
+                - !Sub ${OrdersTable.Arn}/index/orderId-index
+                - !GetAtt UsersTable.Arn
+            - Sid: BucketsRW
+              Effect: Allow
+              Action:
+                - s3:GetObject
+                - s3:PutObject
+                - s3:DeleteObject
+                - s3:ListBucket
+              Resource:
+                - !Sub arn:aws:s3:::${WebsiteBucketPrefix}-${AWS::AccountId}-${AWS::Region}
+                - !Sub arn:aws:s3:::${WebsiteBucketPrefix}-${AWS::AccountId}-${AWS::Region}/*
+                - !Sub arn:aws:s3:::dvsa-receipts-bucket-${AWS::AccountId}-${AWS::Region}
+                - !Sub arn:aws:s3:::dvsa-receipts-bucket-${AWS::AccountId}-${AWS::Region}/*
+                - !Sub arn:aws:s3:::dvsa-feedback-bucket-${AWS::AccountId}-${AWS::Region}
+                - !Sub arn:aws:s3:::dvsa-feedback-bucket-${AWS::AccountId}-${AWS::Region}/*
+            - Sid: CognitoScopedAdmin
+              Effect: Allow
+              Action:
+                - cognito-idp:AdminCreateUser
+                - cognito-idp:AdminSetUserPassword
+                - cognito-idp:AdminUpdateUserAttributes
+                - cognito-idp:ListUsers
+              Resource: !GetAtt CognitoUserPoolDvsaUserPool.Arn
 
   InitializeApplication:
     Type: AWS::CloudFormation::CustomResource
     Properties:
       ServiceToken:
          Fn::GetAtt: [ "InitCustomFunction" , "Arn" ]
-  # endregion custom-resource
 
 Outputs:
   WebsiteURL:
