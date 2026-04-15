@@ -3,7 +3,7 @@ import decimal
 import boto3
 import time
 import os
-from datetime import datetime
+from datetime import datetime 
 from boto3.dynamodb.conditions import Key, Attr
 
     # status list
