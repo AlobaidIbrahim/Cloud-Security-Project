@@ -21,12 +21,15 @@ from botocore.exceptions import ClientError
 LOCK_NAME = "billing"
 LOCK_TIMEOUT_SECONDS = 120
 
+# in the fix part
+REQUEST_LIMIT_SECONDS = 2
+
 
 def release_lock(table, key):
     try:
         table.update_item(
             Key=key,
-            UpdateExpression="REMOVE workflowLock, workflowLockTS",
+            UpdateExpression="REMOVE workflowLock, workflowLockTS, lastRequestTime",
             ConditionExpression="attribute_exists(workflowLock)",
         )
     except ClientError:
@@ -53,14 +56,17 @@ def lambda_handler(event, context):
     table = dynamodb.Table(os.environ["ORDERS_TABLE"])
     key = {"orderId": order_id, "userId": user_id}
 
-    response = table.get_item(
-        Key=key,
-        AttributesToGet=["orderId", "orderStatus", "itemList", "workflowLock", "workflowLockTS"],
-    )
+    response = table.get_item(Key=key)
     if "Item" not in response:
         return {"status": "err", "msg": "could not find order"}
 
     item = response["Item"]
+
+    #fIX the rate limiting check
+    last_request = item.get("lastRequestTime", 0)
+    if now_ts - last_request < REQUEST_LIMIT_SECONDS:
+        return {"status": "err", "msg": "Too many requests"}
+
     status = int(json.dumps(item["orderStatus"], cls=DecimalEncoder))
     if status >= 120:
         return {"status": "err", "msg": "order already made"}
@@ -68,7 +74,7 @@ def lambda_handler(event, context):
     try:
         table.update_item(
             Key=key,
-            UpdateExpression="SET workflowLock = :lock_name, workflowLockTS = :lock_ts",
+            UpdateExpression="SET workflowLock = :lock_name, workflowLockTS = :lock_ts, lastRequestTime = :req_ts",
             ConditionExpression=(
                 "orderStatus < :paid_status AND "
                 "(attribute_not_exists(workflowLock) OR "
@@ -77,6 +83,7 @@ def lambda_handler(event, context):
             ExpressionAttributeValues={
                 ":lock_name": LOCK_NAME,
                 ":lock_ts": now_ts,
+                ":req_ts": now_ts,
                 ":stale_before": now_ts - LOCK_TIMEOUT_SECONDS,
                 ":paid_status": 120,
             },
@@ -87,105 +94,35 @@ def lambda_handler(event, context):
         return {"status": "err", "msg": "could not lock order for billing"}
 
     try:
-        response = table.get_item(
-            Key=key,
-            AttributesToGet=["orderId", "orderStatus", "itemList", "workflowLock", "workflowLockTS"],
-            ConsistentRead=True,
-        )
-        if "Item" not in response:
-            release_lock(table, key)
-            return {"status": "err", "msg": "could not find order"}
-
-        item = response["Item"]
-        status = int(json.dumps(item["orderStatus"], cls=DecimalEncoder))
-        if status >= 120:
-            release_lock(table, key)
-            return {"status": "err", "msg": "order already made"}
-
         data_dict = []
         for item_id, quantity in item["itemList"].items():
             data_dict.append({"itemId": item_id, "quantity": int(quantity)})
         data = json.dumps(data_dict, cls=DecimalEncoder)
 
         total_url = os.environ["GET_CART_TOTAL"]
-        req = http.request(
-            "POST",
-            total_url,
-            body=data,
-            headers={"Content-Type": "application/json", "Content-Length": str(len(data))},
-        )
+        req = http.request("POST", total_url, body=data, headers={"Content-Type": "application/json"})
         total_res = json.loads(req.data)
         cart_total = float(total_res["total"])
-        missings = total_res.get("missing", {})
 
         billing_data = json.dumps(event["billing"])
         pay_url = os.environ["PAYMENT_PROCESS_URL"]
-        req = http.request(
-            "POST",
-            pay_url,
-            body=billing_data,
-            headers={"Content-Type": "application/json", "Content-Length": str(len(billing_data))},
-        )
+        req = http.request("POST", pay_url, body=billing_data, headers={"Content-Type": "application/json"})
         pay_res = json.loads(req.data)
-
-        if pay_res["status"] == 110:
-            release_lock(table, key)
-            return {"status": "err", "msg": "invalid payment details"}
 
         if pay_res["status"] != 120:
             release_lock(table, key)
-            return {"status": "err", "msg": "could not process payment"}
-
-        update_expression = (
-            "SET orderStatus = :orderstatus, paymentTS = :paymentTS, "
-            "totalAmount = :total, confirmationToken = :token"
-        )
-        two_places = Decimal(10) ** -2
-        expression_attributes = {
-            ":orderstatus": pay_res["status"],
-            ":paymentTS": now_ts,
-            ":total": Decimal(cart_total).quantize(two_places),
-            ":token": pay_res["confirmation_token"],
-            ":lock_name": LOCK_NAME,
-            ":paid_status": 120,
-        }
-
-        if missings:
-            new_item_list = {}
-            items = item.get("itemList", {})
-            for item_id in items:
-                new_item_list[item_id] = items[item_id] - missings[item_id] if missings.get(item_id) else items[item_id]
-            expression_attributes[":il"] = new_item_list
-            update_expression += ", itemList = :il"
-
-        update_expression += " REMOVE workflowLock, workflowLockTS"
+            return {"status": "err", "msg": "payment failed"}
 
         table.update_item(
             Key=key,
-            UpdateExpression=update_expression,
-            ConditionExpression="workflowLock = :lock_name AND orderStatus < :paid_status",
-            ExpressionAttributeValues=expression_attributes,
+            UpdateExpression="SET orderStatus = :orderstatus REMOVE workflowLock, workflowLockTS",
+            ExpressionAttributeValues={
+                ":orderstatus": pay_res["status"],
+            },
         )
 
-        sqs = boto3.client("sqs")
-        sqs.send_message(
-            QueueUrl=os.environ["SQS_URL"],
-            MessageBody=json.dumps({"orderId": order_id, "userId": user_id}),
-            DelaySeconds=10,
-        )
+        return {"status": "ok", "amount": float(cart_total)}
 
-        return {
-            "status": "ok",
-            "amount": float(cart_total),
-            "token": pay_res["confirmation_token"],
-            "missing": missings,
-        }
-
-    except ClientError as e:
-        if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
-            return {"status": "err", "msg": "order changed during billing"}
-        release_lock(table, key)
-        return {"status": "err", "msg": "unknown error"}
     except Exception:
         release_lock(table, key)
         return {"status": "err", "msg": "unknown error"}
