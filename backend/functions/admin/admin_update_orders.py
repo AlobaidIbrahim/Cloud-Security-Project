@@ -97,6 +97,7 @@ def lambda_handler(event, context):
     is_admin = token.get("custom:is_admin", "false")
     if is_admin != "true":
         return {"status": "err", "msg": "Unauthorized"}
+    
 
     action = event['body']['action']
     orderId = event['body']['order-id']
