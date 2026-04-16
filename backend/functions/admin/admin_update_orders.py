@@ -11,6 +11,7 @@ import jsonpickle
 dynamodb = boto3.resource('dynamodb')
 table = dynamodb.Table(os.environ["ORDERS_TABLE"])
 
+
 class DecimalEncoder(json.JSONEncoder):
     def default(self, o):
         if isinstance(o, decimal.Decimal):
@@ -19,11 +20,11 @@ class DecimalEncoder(json.JSONEncoder):
             else:
                 return int(o)
         return super(DecimalEncoder, self).default(o)
-        
+
 
 def addItem(user, obj, ts):
     id = str(uuid.uuid4())
-    
+
     response = table.put_item(
         Item={
             'orderId': id,
@@ -71,29 +72,32 @@ def updateItem(orderId, user, obj, ts):
 
 def lambda_handler(event, context):
     if "authorization" in event["headers"]:
-        auth_header = event["headers"]["authorization"];
+        auth_header = event["headers"]["authorization"]
     elif "Authorization" in event["headers"]:
-        auth_header = event["headers"]["Authorization"];
+        auth_header = event["headers"]["Authorization"]
     else:
-        res = {"status": "err", "msg": "Unknown user. Are you an admin?"}
-        return res
-        
+        return {"status": "err", "msg": "Unknown user. Are you an admin?"}
+
     token_sections = auth_header.split('.')
     try:
         auth_data = base64.b64decode(token_sections[1])
     except TypeError:
         try:
-            auth_data = base64.b64decode(token_sections[1]+"=")
+            auth_data = base64.b64decode(token_sections[1] + "=")
         except TypeError:
             try:
-                auth_data = base64.b64decode(token_sections[1]+"==")
+                auth_data = base64.b64decode(token_sections[1] + "==")
             except TypeError:
-                res = {"status": "err", "msg": "Could not prase authorization header"}
-                return res
-            
-    token = json.loads(auth_data);
-    user = token["username"];
-    
+                return {"status": "err", "msg": "Could not parse authorization header"}
+
+    token = json.loads(auth_data)
+    user = token["username"]
+
+    # Fix: allow only admin users
+    is_admin = token.get("custom:is_admin", "false")
+    if is_admin != "true":
+        return {"status": "err", "msg": "Unauthorized"}
+
     action = event['body']['action']
     orderId = event['body']['order-id']
     item = event['body']['item']
