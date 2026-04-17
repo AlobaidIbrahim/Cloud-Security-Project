@@ -22,14 +22,14 @@ LOCK_NAME = "billing"
 LOCK_TIMEOUT_SECONDS = 120
 
 # in the fix part
-REQUEST_LIMIT_SECONDS = 2
+REQUEST_LIMIT_SECONDS = 10
 
 
 def release_lock(table, key):
     try:
         table.update_item(
             Key=key,
-            UpdateExpression="REMOVE workflowLock, workflowLockTS, lastRequestTime",
+            UpdateExpression="REMOVE workflowLock, workflowLockTS",
             ConditionExpression="attribute_exists(workflowLock)",
         )
     except ClientError:
@@ -58,7 +58,7 @@ def lambda_handler(event, context):
 
     response = table.get_item(Key=key)
     if "Item" not in response:
-        return {"status": "err", "msg": "could not find order"}
+        return {"status": "err", "msg": "could not find order"} 
 
     item = response["Item"]
 
@@ -69,6 +69,7 @@ def lambda_handler(event, context):
 
     status = int(json.dumps(item["orderStatus"], cls=DecimalEncoder))
     if status >= 120:
+        
         return {"status": "err", "msg": "order already made"}
 
     try:
